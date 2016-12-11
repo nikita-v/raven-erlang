@@ -5,42 +5,43 @@
 
 
 -export([
-	init/1,
-	code_change/3,
-	terminate/2,
-	handle_call/2,
-	handle_event/2,
-	handle_info/2
+         init/1,
+         code_change/3,
+         terminate/2,
+         handle_call/2,
+         handle_event/2,
+         handle_info/2
 ]).
 
 
 -record(state, {level}).
 
-init(Level) ->
-    {ok, #state{level=lager_util:config_to_mask(Level)}}.
+init(Level) when is_atom(Level) ->
+    init([{level, Level}]);
+init([{level, Level}]) ->
+    {ok, #state{level=lager_util:level_to_num(Level)}}.
 
 
 %% @private
 handle_call(get_loglevel, #state{level=Level} = State) ->
     {ok, Level, State};
 handle_call({set_loglevel, Level}, State) ->
-   try lager_util:config_to_mask(Level) of
+   try lager_util:level_to_num(Level) of
         Levels ->
-            {ok, ok, State#state{level=Levels}}
-    catch
-        _:_ ->
-            {ok, {error, bad_log_level}, State}
-    end;
+           {ok, ok, State#state{level=Levels}}
+   catch
+       _:_ ->
+           {ok, {error, bad_log_level}, State}
+   end;
 handle_call(_, State) ->
-	{ok, ok, State}.
+    {ok, ok, State}.
 
 %% @private
 handle_event({log, Data},
     #state{level=L} = State) ->
     case lager_util:is_loggable(Data, L, ?MODULE) of
         true ->
-            {Message, Params} = parse_message(Data),
-            raven:capture(Message, Params),
+            capture(parse_message(Data)),
             {ok, State};
         false ->
             {ok, State}
@@ -50,30 +51,24 @@ handle_event(_Event, State) ->
 
 
 handle_info(_, State) ->
-	{ok, State}.
+    {ok, State}.
 
 code_change(_, State, _) ->
-	{ok, State}.
+    {ok, State}.
 
 terminate(_, _) ->
-	ok.
+    ok.
 
+capture({Message, Params}) ->
+    raven:capture(Message, Params).
 
-%% TODO - check what other metadata can be sent to sentry
-parse_message({lager_msg, [], MetaData, Level, _, _Time, Message}) ->
-    Extra = parse_meta(MetaData),
-    {Message, [{level, Level},
-               {extra, Extra}]}.
+parse_message(Log) ->
+    {lager_msg:message(Log), [ {level, lager_msg:severity(Log)}
+                             | extra(Log)
+                             ]}.
 
-
-%% @doc at the moment this is just a passthrough -- what other metadata is out there?
-parse_meta(MetaData) ->
-    parse_meta(MetaData, []).
-
-parse_meta([], Acc) ->
-    Acc;
-parse_meta([{pid, Pid} = PidProp | Rest], Acc) when is_pid(Pid) ->
-    parse_meta(Rest, [PidProp | Acc]);
-parse_meta([{_, _} | Rest], Acc) ->
-    parse_meta(Rest, Acc).
-
+extra(Log) ->
+    case lager_msg:metadata(Log) of
+        []    -> [];
+        Extra -> [{extra, Extra}]
+    end.

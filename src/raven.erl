@@ -11,7 +11,8 @@
 	public_key :: string(),
 	private_key :: string(),
 	project :: string(),
-	ipfamily :: atom()
+	ipfamily :: atom(),
+	release :: binary() | undefined
 }).
 
 -type cfg_rec() :: #cfg{}.
@@ -28,33 +29,34 @@ capture(Message, Params) when is_list(Message) ->
 	capture(unicode:characters_to_binary(Message), Params);
 capture(Message, Params) ->
 	Cfg = get_config(),
-	Document = {[
+	Document = [
 		{event_id, event_id_i()},
 		{project, unicode:characters_to_binary(Cfg#cfg.project)},
 		{platform, erlang},
 		{server_name, node()},
 		{timestamp, timestamp_i()},
+		{release, Cfg#cfg.release},
 		{message, term_to_json_i(Message)} |
 		lists:map(fun
 			({stacktrace, Value}) ->
-				{'sentry.interfaces.Stacktrace', {[
-					{frames, lists:reverse([frame_to_json_i(Frame) || Frame <- Value])}
-				]}};
+				{'sentry.interfaces.Stacktrace', [
+					{frames,lists:reverse([frame_to_json_i(Frame) || Frame <- Value])}
+				]};
 			({exception, {Type, Value}}) ->
-				{'sentry.interfaces.Exception', {[
+				{'sentry.interfaces.Exception', [
 					{type, Type},
 					{value, term_to_json_i(Value)}
-				]}};
+				]};
 			({tags, Tags}) ->
-				{tags, {[{Key, term_to_json_i(Value)} || {Key, Value} <- Tags]}};
+				{tags, [{Key, term_to_json_i(Value)} || {Key, Value} <- Tags]};
 			({extra, Tags}) ->
-				{extra, {[{Key, term_to_json_i(Value)} || {Key, Value} <- Tags]}};
+				{extra, [{Key, term_to_json_i(Value)} || {Key, Value} <- Tags]};
 			({Key, Value}) ->
 				{Key, term_to_json_i(Value)}
 		end, Params)
-	]},
+	],
 	Timestamp = integer_to_list(unix_timestamp_i()),
-	Body = base64:encode(zlib:compress(jsone:encode(Document))),
+	Body = base64:encode(zlib:compress(jsx:encode(Document))),
 	UA = user_agent(),
 	Headers = [
 		{"X-Sentry-Auth",
@@ -68,7 +70,7 @@ capture(Message, Params) ->
 	httpc:request(post,
 		{Cfg#cfg.uri ++ "/api/store/", Headers, "application/octet-stream", Body},
 		[],
-		[{body_format, binary}]
+		[{body_format, binary}, {sync, false}]
 	),
 	ok.
 
@@ -85,6 +87,7 @@ get_config() ->
 -spec get_config(App :: atom()) -> cfg_rec().
 get_config(App) ->
 	{ok, IpFamily} = application:get_env(App, ipfamily),
+	Release = application:get_env(App, release, undefined),
 	case application:get_env(App, dsn) of
 		{ok, Dsn} ->
 			{match, [_, Protocol, PublicKey, SecretKey, Uri, Project]} =
@@ -93,7 +96,8 @@ get_config(App) ->
 			     public_key = PublicKey,
 			     private_key = SecretKey,
 			     project = Project,
-			     ipfamily = IpFamily};
+			     ipfamily = IpFamily,
+			     release = Release};
 		undefined ->
 			{ok, Uri} = application:get_env(App, uri),
 			{ok, PublicKey} = application:get_env(App, public_key),
@@ -103,7 +107,8 @@ get_config(App) ->
 			     public_key = PublicKey,
 			     private_key = PrivateKey,
 			     project = Project,
-			     ipfamily = IpFamily}
+			     ipfamily = IpFamily,
+			     release = Release}
 	end.
 
 
@@ -132,7 +137,6 @@ frame_to_json_i({Module, Function, Arguments, Location}) ->
 		false -> -1;
 		{line, L} -> L
 	end,
-	{
 		case is_list(Arguments) of
 			true -> [{vars, [iolist_to_binary(io_lib:format("~w", [Argument])) || Argument <- Arguments]}];
 			false -> []
@@ -144,8 +148,7 @@ frame_to_json_i({Module, Function, Arguments, Location}) ->
 				false -> <<(atom_to_binary(Module, utf8))/binary, ".erl">>;
 				{file, File} -> list_to_binary(File)
 			end}
-		]
-	}.
+		].
 
 term_to_json_i(Term) when is_list(Term) ->
 	case io_lib:printable_unicode_list(Term) of
